@@ -1,7 +1,4 @@
 # @title Necessary imports and globals.
-from dopamine.replay_memory import prioritized_replay_buffer
-import collections
-import tensorflow as tf
 import numpy as np
 import os
 import dopamine
@@ -12,12 +9,12 @@ from absl import flags
 import gin.tf
 
 BASE_PATH = 'running-data'  # @param
-GAME = 'Berzerk'  # @param
+GAME = 'Robotank'  # @param
 LOG_PATH = os.path.join(BASE_PATH, 'prioritized_srdqn_normalized', GAME)
 
-SRNetworkType = collections.namedtuple(
-    'sr_network', ['feature', 'decoded_state', 'sr_values'])
-
+import tensorflow as tf
+import collections
+SRNetworkType = collections.namedtuple('sr_network', ['feature', 'decoded_state', 'sr_values'])
 
 class SRNetwork(tf.keras.Model):
   """The convolutional network used to compute the agent's successor features"""
@@ -45,21 +42,19 @@ class SRNetwork(tf.keras.Model):
     self.conv3 = tf.keras.layers.Conv2D(64, [3, 3], strides=1, padding='same',
                                         activation=activation_fn, name='Conv')
     self.flatten = tf.keras.layers.Flatten()
-    self.dense_phi = tf.keras.layers.Dense(
-        512, name='fully_connected')  # the phi_st
+    self.dense_phi = tf.keras.layers.Dense(512, name='fully_connected') # the phi_st
 
     # auto-decoder to reconstruct state
-    self.dense_decoder = tf.keras.layers.Dense(
-        7 * 7 * self.in_channels, activation=activation_fn, name='dense_decoder')
+    self.dense_decoder = tf.keras.layers.Dense(7 * 7 * self.in_channels, activation=activation_fn, name='dense_decoder')
     self.reshape_decoder = tf.keras.layers.Reshape((7, 7, self.in_channels))
     self.conv4 = tf.keras.layers.Conv2DTranspose(64, [3, 3], strides=1, padding='same',
-                                                 activation=activation_fn, name='Conv')
+                                        activation=activation_fn, name='Conv')
     self.conv5 = tf.keras.layers.Conv2DTranspose(64, [6, 6], strides=3, padding='same',
-                                                 activation=activation_fn, name='Conv')
+                                        activation=activation_fn, name='Conv')
     self.conv6 = tf.keras.layers.Conv2DTranspose(32, [8, 8], strides=4, padding='same',
-                                                 activation=activation_fn, name='Conv')
+                                        activation=activation_fn, name='Conv')
     self.conv_st = tf.keras.layers.Conv2D(self.in_channels, [4, 4], strides=1, padding='same',
-                                          name='Conv')  # the output s^t
+                                        name='Conv') # the output s^t
 
     # successor representation branches
     self.branches = [[
@@ -84,7 +79,7 @@ class SRNetwork(tf.keras.Model):
     Returns:
       collections.namedtuple, output ops (graph mode) or output tensors (eager).
     """
-
+    
     # compute feature
     x = tf.cast(state, tf.float32)
     x = x / 255
@@ -115,22 +110,24 @@ class SRNetwork(tf.keras.Model):
 
     return SRNetworkType(phi, decoded_state, srs)
 
-
 # @title Create the DQN with prioritized replay
-
+from dopamine.replay_memory import prioritized_replay_buffer
+import tensorflow as tf
 
 class PrioritizedSRDQNAgent(dqn_agent.DQNAgent):
   def __init__(self, sess, num_actions):
     """This maintains all the DQN default argument values."""
     super().__init__(sess, num_actions, tf_device='/gpu:0')
     self._replay_scheme = 'prioritized'
-
+    
     with tf.device('/gpu:0'):
         self._sr_train_op = self._build_sr_train_op()
-
+        
     print('finished constructing')
     self.online_convnet.summary()
     self.sr_convnet.summary()
+    
+        
 
   def _build_networks(self):
     """Builds the Q-value network computations needed for acting and training.
@@ -156,19 +153,16 @@ class PrioritizedSRDQNAgent(dqn_agent.DQNAgent):
     # using a deep network, but may affect performance with a linear
     # approximation scheme.
     self._q_argmax = tf.argmax(self._net_outputs.q_values, axis=1)[0]
-    self._replay_net_outputs = self.online_convnet(
-        self._replay.transition['state'])
+    self._replay_net_outputs = self.online_convnet(self._replay.transition['state'])
     self._replay_next_target_net_outputs = self.target_convnet(
         self._replay.transition['next_state'])
-
+    
     self._q_argmax_sr = tf.argmax(self._net_outputs.q_values, axis=1)
-    self.sr_convnet = SRNetwork(
-        self.num_actions, atari_lib.NATURE_DQN_STACK_SIZE)
+    self.sr_convnet = SRNetwork(self.num_actions, atari_lib.NATURE_DQN_STACK_SIZE)
     # sr for states sampled
     self._sr_net_outputs = self.sr_convnet(self._replay.transition['state'])
     # sr for next_states sampled
-    self._sr_net_outputs_next = self.sr_convnet(
-        self._replay.transition['next_state'])
+    self._sr_net_outputs_next = self.sr_convnet(self._replay.transition['next_state'])
     # sr for current state and action
     self._sr_net_curr_state = self.sr_convnet(self.state_ph)
 
@@ -180,27 +174,25 @@ class PrioritizedSRDQNAgent(dqn_agent.DQNAgent):
         update_horizon=self.update_horizon,
         gamma=self.gamma,
         observation_dtype=self.observation_dtype.as_numpy_dtype)
-
+  
   def _build_sr_train_op(self):
     feature = self._sr_net_outputs.feature
     decoded_state = self._sr_net_outputs.decoded_state
-
+    
     loss_ae = tf.compat.v1.losses.huber_loss(
         self._replay.states, decoded_state, reduction=tf.losses.Reduction.NONE
     )
     srs = self._sr_net_outputs.sr_values
-    indices = tf.transpose(
-        tf.stack([self._replay.actions, tf.constant([i for i in range(32)])]))
+    indices = tf.transpose(tf.stack([self._replay.actions, tf.constant([i for i in range(32)])]))
     srs = tf.gather_nd(srs, indices)
-
+    
     srs_next = self._sr_net_outputs_next.sr_values
-    indices_next = tf.transpose(
-        tf.stack([self._replay.next_actions, tf.constant([i for i in range(32)])]))
+    indices_next = tf.transpose(tf.stack([self._replay.next_actions, tf.constant([i for i in range(32)])]))
     srs_next = tf.gather_nd(srs_next, indices_next)
-
+    
     assert feature.shape == srs_next.shape
     assert srs.shape == feature.shape
-
+    
     loss_sr = tf.compat.v1.losses.mean_squared_error(
         srs, feature + self.gamma * srs_next
     )
@@ -218,17 +210,18 @@ class PrioritizedSRDQNAgent(dqn_agent.DQNAgent):
         self._replay_net_outputs.q_values * replay_action_one_hot,
         axis=1,
         name='replay_chosen_q')
-
+    
     # output from the SR network
     # note that the back prop of the q-loss should not take into account
     # the graph of the need term.
     curr_action = tf.stop_gradient(self._q_argmax_sr)
     sample_features = self._sr_net_outputs.feature
-    curr_sr = self._sr_net_curr_state.sr_values
+    curr_sr = self._sr_net_curr_state.sr_values    
     curr_sr = tf.gather_nd(curr_sr, curr_action)
     need = tf.stop_gradient(
         tf.tensordot(curr_sr, sample_features, axes=[[1], [1]])[0]
     )
+    
 
     target = tf.stop_gradient(self._build_target_q_op())
     loss = tf.compat.v1.losses.huber_loss(
@@ -254,18 +247,18 @@ class PrioritizedSRDQNAgent(dqn_agent.DQNAgent):
     # Weight the loss by the inverse priorities.
 #     loss = loss_weights * loss * need
     loss = loss_weights * loss
-
+    
     assert need.shape == loss.shape
-
-    # TODO:
-    # scheme 1:
+    
+    # TODO: 
+    # scheme 1: 
     # - normalize feature
     # - if need smaller than 0, move all need values up
     need = need / tf.math.pow(tf.norm(sample_features, axis=1), 2)
     need = need - tf.minimum(tf.math.reduce_min(need), 0.0)
-
+        
     loss_need = need * loss
-
+    
     with tf.control_dependencies([update_priorities_op]):
       if self.summary_writer is not None:
         with tf.compat.v1.variable_scope('Losses'):
@@ -281,7 +274,7 @@ class PrioritizedSRDQNAgent(dqn_agent.DQNAgent):
     priority = self._replay.memory.sum_tree.max_recorded_priority
     if not self.eval_mode:
       self._replay.add(last_observation, action, reward, is_terminal, priority)
-
+    
   def _record_observation(self, observation):
     """Records an observation and update state.
 
@@ -297,7 +290,7 @@ class PrioritizedSRDQNAgent(dqn_agent.DQNAgent):
     # Swap out the oldest frame with the current frame.
     self.state = np.roll(self.state, -1, axis=-1)
     self.state[0, ..., -1] = self._observation
-
+    
   def _train_step(self):
     """Runs a single training step.
 
@@ -313,12 +306,12 @@ class PrioritizedSRDQNAgent(dqn_agent.DQNAgent):
     if self._replay.memory.add_count > self.min_replay_history:
       if self.training_steps % self.update_period == 0:
         self._sess.run(self._train_op, {self.state_ph: self.state})
-
+        
 #         print(self._sess.run(self._sr_net_curr_state.feature, {self.state_ph: self.state}))
         self._sess.run(self._sr_train_op)
         if (self.summary_writer is not None and
             self.training_steps > 0 and
-                self.training_steps % self.summary_writing_frequency == 0):
+            self.training_steps % self.summary_writing_frequency == 0):
           summary = self._sess.run(self._merged_summaries)
           self.summary_writer.add_summary(summary, self.training_steps)
 
@@ -326,12 +319,10 @@ class PrioritizedSRDQNAgent(dqn_agent.DQNAgent):
         self._sess.run(self._sync_qt_ops)
 
     self.training_steps += 1
-
-
+    
 def create_prioritized_srdqn_agent(sess, environment, summary_writer=None):
   """The Runner class will expect a function of this type to create an agent."""
   return PrioritizedSRDQNAgent(sess, num_actions=environment.action_space.n)
-
 
 prioritized_srdqn_config = """
 import dopamine.discrete_domains.atari_lib
@@ -374,8 +365,7 @@ gin.parse_config(prioritized_srdqn_config, skip_unknown=False)
 # Create the runner class with this agent. We use very small numbers of steps
 # to terminate quickly, as this is mostly meant for demonstrating how one can
 # use the framework.
-prioritized_srdqn_runner = run_experiment.TrainRunner(
-    LOG_PATH, create_prioritized_srdqn_agent)
+prioritized_srdqn_runner = run_experiment.TrainRunner(LOG_PATH, create_prioritized_srdqn_agent)
 
 # @title Train MyRandomDQNAgent.
 print('Will train agent, please be patient, may be a while...')
